@@ -102,7 +102,7 @@ The pipeline uses the latest Ubuntu image (`ubuntu-latest`), providing a consist
         - **Display Name:** Publish Pipeline Artifacts
         - **Description:** Publishes the pipeline artifacts, making them available for download and further use in the CI/CD process.
        
-    20. **    Deploy OH Resources to Azure**
+    20. **Deploy OH Resources to Azure**
         - **Display Name:** Deploy OH Resources to Azure
         - **Description:** Deploys resources to Azure using an ARM template, ensuring infrastructure is provisioned and configured as needed for the application.
        
