@@ -1,0 +1,11 @@
+name: insurance_classification
+dependencies:
+  - python=3.9
+  - scikit-learn
+  - pandas
+  - numpy
+channels:
+  - defaults
+docker:
+  enabled: true  # Enable Docker
+  base_image: "mcr.microsoft.com/azureml/openmpi3.1.2-ubuntu18.04:latest"  # Specify a valid base Docker image

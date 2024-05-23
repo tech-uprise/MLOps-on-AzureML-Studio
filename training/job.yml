@@ -1,0 +1,15 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+command: python train_aml.py
+environment: azureml:insurance_classification:1
+compute: azureml:amlcluster
+inputs:
+  training_data:
+    type: uri_file
+    path: azureml://datastores/workspaceblobstore/paths/data/train.csv
+outputs:
+  model_output:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/models/
+experiment_name: insurance_classification
+display_name: Training Job
+description: Training job for insurance model.

@@ -1,0 +1,309 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: '$(azureml.variableGroupName)' # Variable group for shared variables across pipelines
+  - name: 'pythonVersion'
+    value: '3.8'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: 'Dev'
+    displayName: 'Dev'
+    jobs:
+      - job: "Provision_Dev"
+        displayName: "Provision Dev resources"
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 0
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Set Python Version to 3.9'
+            inputs:
+              versionSpec: '3.9'
+              addToPath: true
+              architecture: 'x64'
+
+          - task: Bash@3
+            displayName: 'Install Python Requirements'
+            inputs:
+              filePath: 'package_requirement/install_requirements.sh'
+              workingDirectory: 'package_requirement'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r package_requirement/requirements.txt
+            displayName: 'Install Dependencies'
+
+          - script: |
+              printenv
+            displayName: 'Print Environment Variables'
+
+          - script: |
+              ls -la
+            displayName: 'List Directory Contents'
+
+          - task: Bash@3
+            displayName: 'Run Pytest with Coverage'
+            inputs:
+              targetType: 'inline'
+              script: |
+                pytest ../training/train_test.py \
+                  --doctest-modules \
+                  --junitxml=../junit/test-results.xml \
+                  --cov=../data_test \
+                  --cov-report=xml \
+                  --cov-report=html
+              workingDirectory: 'package_requirement'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/junit/test-results.xml'
+              failTaskOnFailedTests: true
+
+          - task: AzureCLI@2
+            displayName: 'Add Azure ML Extension'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Remove conflicting extension if it exists
+                if az extension list --query "[?name=='azure-cli-ml']" | grep -q 'azure-cli-ml'; then
+                  az extension remove -n azure-cli-ml
+                fi
+
+                # Ensure the ml extension is installed
+                if ! az extension list --query "[?name=='ml']" | grep -q 'ml'; then
+                  az extension add -n ml --allow-preview true
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Create Azure ML Workspace'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                if ! az ml workspace show -n $(azureml.workspaceName) -g $(azureml.resourceGroup); then
+                  az ml workspace create \
+                    -g $(azureml.resourceGroup) \
+                    -n $(azureml.workspaceName) \
+                    -l $(azureml.location)
+                else
+                  echo "Workspace $(azureml.workspaceName) already exists."
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Create Azure ML Compute Target'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az ml compute create -n $(amlcompute.clusterName) \
+                  --type amlcompute \
+                  --min-instances $(amlcompute.minNodes) \
+                  --max-instances $(amlcompute.maxNodes) \
+                  --size $(amlcompute.vmSize) \
+                  --idle-time-before-scale-down $(amlcompute.idleSecondsBeforeScaledown) \
+                  -w $(azureml.workspaceName) \
+                  -g $(azureml.resourceGroup)
+
+          - task: AzureCLI@2
+            displayName: 'Upload Data to Datastore'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Install necessary Azure CLI extensions
+                az extension add -n azure-cli-ml
+                az extension add -n ml
+
+                # Get the default datastore name
+                DATASTORE_NAME=$(az ml datastore show-default \
+                  -g $(azureml.resourceGroup) \
+                  -w $(azureml.workspaceName) \
+                  --query name -o tsv)
+
+                # Upload data to the datastore
+                az ml datastore upload \
+                  -g $(azureml.resourceGroup) \
+                  -w $(azureml.workspaceName) \
+                  -n $DATASTORE_NAME \
+                  -p data \
+                  -u insurance \
+                  --overwrite true    
+
+          - task: Bash@3
+            displayName: 'Create Metadata and Models Directory'
+            inputs:
+              targetType: 'inline'
+              script: 'mkdir -p metadata models'
+
+          - task: AzureCLI@2
+            displayName: 'Create Azure ML Environment'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Remove conflicting extension if it exists
+                if az extension list --query "[?name=='azure-cli-ml']" | grep -q 'azure-cli-ml'; then
+                  az extension remove -n azure-cli-ml
+                fi
+
+                # Ensure the ml extension is installed
+                if ! az extension list --query "[?name=='ml']" | grep -q 'ml'; then
+                  az extension add -n ml --allow-preview true
+                fi
+
+                az ml environment create --name insurance_classification \
+                  --conda-file environment.yml \
+                  --image "mcr.microsoft.com/azureml/openmpi3.1.2-ubuntu18.04:latest" \
+                  -g $(azureml.resourceGroup) \
+                  -w $(azureml.workspaceName)
+
+          - task: AzureCLI@2
+            displayName: 'Train the Model'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Remove conflicting extension if it exists
+                if az extension list --query "[?name=='azure-cli-ml']" | grep -q 'azure-cli-ml'; then
+                  az extension remove -n azure-cli-ml
+                fi
+
+                # Ensure the ml extension is installed
+                if ! az extension list --query "[?name=='ml']" | grep -q 'ml'; then
+                  az extension add -n ml --allow-preview true
+                fi
+
+                # Run the job creation command
+                az ml job create --file job.yml \
+                  --resource-group $(azureml.resourceGroup) \
+                  --workspace-name $(azureml.workspaceName)
+              workingDirectory: 'training'
+
+          - script: |
+              echo "Current directory: $(pwd)"
+              echo "Listing all files in the current directory:"
+              ls -la
+            displayName: 'Debug Current Directory'
+
+          - script: |
+              mkdir -p $(Build.SourcesDirectory)/deployment/outputs/models
+              echo "Created outputs/models directory"
+            displayName: 'Create Outputs Directory'
+
+          - script: |
+              # Assuming the model file is generated by a previous step
+              # Here we simulate the generation of the model file
+              touch $(Build.SourcesDirectory)/deployment/outputs/models/insurance_model.pkl
+              echo "Simulated model file creation"
+            displayName: 'Simulate Model File Creation'
+
+          - script: |
+              ls -la $(Build.SourcesDirectory)/deployment/outputs/models/
+            displayName: 'List Model Directory Contents'
+
+          - task: AzureCLI@2
+            displayName: 'Assign AcrPush Role to Service Principal'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Define the Azure ML App Object ID directly
+                AZUREML_APP_OBJECT_ID="ca7340a2-b9d0-4e2e-8728-956e69127588"
+
+                # Get the ACR registry ID
+                ACR_REGISTRY_ID=$(az acr show --name $(azureml.containerRegistry) --query id --output tsv)
+
+                # Assign the AcrPush role to the service principal using object ID and principal type
+                az role assignment create --assignee-object-id $AZUREML_APP_OBJECT_ID --assignee-principal-type ServicePrincipal --scope $ACR_REGISTRY_ID --role acrpush
+
+          - task: AzureCLI@2
+            displayName: 'Registering Model'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Model name: $(model.name)"
+                echo "Model path: $(Build.SourcesDirectory)/deployment/outputs/models/insurance_model.pkl"
+                
+                if [ -f "$(Build.SourcesDirectory)/deployment/outputs/models/insurance_model.pkl" ]; then
+                  echo "Model file found. Proceeding with registration."
+                  az ml model create --name $(model.name) \
+                    --path "$(Build.SourcesDirectory)/deployment/outputs/models/insurance_model.pkl" \
+                    --registry-name $(azureml.containerRegistry)
+                  echo "Registration completed successfully."
+                else
+                  echo "Model file does not exist at the specified path."
+                  exit 1
+
+          - task: AzureCLI@2
+            displayName: 'Upload Model to Azure Blob Storage'
+            inputs:
+              azureSubscription: '$(azureml.Subscription)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az storage blob upload \
+                  --account-name $(storageAccountName) \
+                  --container-name $(containerName) \
+                  --name insurance_model.pkl \
+                  --file "$(Build.SourcesDirectory)/deployment/outputs/models/insurance_model.pkl"
+            env:
+              AZURE_STORAGE_KEY: $(storageAccountKey)
+
+          - script: |
+              echo "Current directory: $(pwd)"
+              echo "Listing all files in the current directory:"
+              ls -la
+            displayName: 'Debug Current Directory 2'
+
+          - task: CopyFiles@2
+            displayName: 'Copy Files to Staging Directory'
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)'
+              Contents: |
+                **/*
+                **/metadata/*
+                **/models/*
+                **/Deployment/*
+                **/tests/integration*
+                **/package_requirement/*
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Pipeline Artifacts'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifact: 'landing'
+              publishLocation: 'pipeline'
+
+          - task: AzureResourceGroupDeployment@2
+            displayName: 'Deploy OH resources to Azure'
+            inputs:
+              azureSubscription: '$(AZURE_RM_SVC_CONNECTION)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(RESOURCE_GROUP)'
+              location: $(LOCATION)
+              templateLocation: 'Linked artifact'
+              csmFile: 'environment_setup/cloud-environment.json'
+              overrideParameters: |
+                -baseName $(BASE_NAME) \
+                -location $(LOCATION) \
+                -workspace $(WORKSPACE_NAME)
+              deploymentMode: 'Incremental'

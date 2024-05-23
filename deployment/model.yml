@@ -1,0 +1,10 @@
+$schema: https://azuremlschemas.azureedge.net/latest/model.schema.json
+name: insurance_model
+path: outputs/models/insurance_model.pkl
+description: Classification model for filing a claim prediction
+tags:
+  data: insurance
+  model: classification
+flavors:
+  sklearn:
+    sklearn_version: '0.24.1'

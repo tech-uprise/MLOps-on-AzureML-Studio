@@ -1,0 +1,62 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: 'mlops-vk-vg' # Variable group for shared variables across pipelines
+  - name: 'pythonVersion'
+    value: '3.8'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+- job: BuildAndDeploy
+  displayName: 'Build, Publish Artifacts, and Deploy'
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      addToPath: true
+    displayName: 'Use Python $(pythonVersion)'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install dependencies'
+
+  - task: CopyFiles@2
+    displayName: 'Copy Files to Staging Directory'
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)'
+      Contents: |
+        **/*
+        **/metadata/*
+        **/models/*
+        **/Deployment/*
+        **/tests/integration*
+        **/package_requirement/*
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Pipeline Artifacts'
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)'
+      artifact: 'landing'
+      publishLocation: 'pipeline'
+
+  - task: AzureResourceGroupDeployment@2
+    displayName: 'Deploy OH resources to Azure'
+    inputs:
+      azureSubscription: '$(AZURE_RM_SVC_CONNECTION)'
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: '$(RESOURCE_GROUP)'
+      location: '$(LOCATION)'
+      templateLocation: 'Linked artifact'
+      csmFile: 'environment_setup/cloud-environment.json'
+      overrideParameters: |
+        -baseName $(BASE_NAME) \
+        -location $(LOCATION) \
+        -workspace $(WORKSPACE_NAME)
+      deploymentMode: 'Incremental'
